@@ -5,12 +5,12 @@ from getmac import get_mac_address as gma
 from netifaces import interfaces, ifaddresses  # AF_LINK
 
 
-HOST = ('', 67)
+HOST = ('', 67)  # Any interface, port 67 - DHCP server protocol port
 MAGIC_COOKIE = b'63825363'
 BROADCAST_MAC = b'f' * 12
 FIRST_IP = 11  # Value of the last octet of the first IP address assigned (unless 10 is requested by NETBIOS udhcp)
 DEFAULT_TTL = b'40'  # 64 dec
-DEFAULT_LEASE_TIME = 3600  # 1 hour
+DEFAULT_LEASE_TIME = 3600  # 3600 seconds = 1 hour
 DEFAULT_RENEWAL_TIME = 1800  # 30 minutes
 DEFAULT_REBINDING_TIME = 3150  # 52:30 minutes
 LEASE_TIME_LEN = 8
@@ -46,7 +46,7 @@ DHCP_ACK = b'05'
 DHCP_NAK = b'06'
 
 
-class DHCPPayload:
+class DHCPPayload:  # application layer data
     def __init__(self):
         self.op = b'01'                # Message op code: 1 = BOOTREQUEST, 2 = BOOTREPLY
         self.htype = b'01'             # Hardware address type
@@ -63,6 +63,9 @@ class DHCPPayload:
         self.abort = False
 
     def to_bytes(self):
+        """
+        :return: byte string formatted for DHCP protocol
+        """
         payload = b''
         payload += self.op
         payload += self.htype
@@ -86,13 +89,15 @@ class DHCPPayload:
 
 def log(string):
     """
-
     :type string: str
     """
     print(strftime('{%Y-%m-%d %H:%M:%S}\t') + string)
 
 
 def get_my_ip():
+    """
+    :return: Server IP address (string)
+    """
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         # doesn't even have to be reachable
@@ -106,6 +111,10 @@ def get_my_ip():
 
 
 def get_my_netmask(ip):
+    """
+    :param ip: IP address for which you want to know the netmask
+    :return:
+    """
     for interface in (i for i in interfaces() if i != 'lo'):
         for family in ifaddresses(interface):
             if socket.AF_INET not in ifaddresses(interface):
@@ -116,6 +125,9 @@ def get_my_netmask(ip):
 
 
 def get_my_interface():
+    """
+    :return: Your public network interface
+    """
     for interface in (i for i in interfaces() if i != 'lo'):
         for family in ifaddresses(interface):
             if socket.AF_INET not in ifaddresses(interface):
@@ -128,10 +140,19 @@ def get_my_interface():
 
 
 def to_hex_ip(ip):
+    """
+    :param ip: IP address (string)
+    :return: hex representation of IP address (bytes)
+    """
     return hexlify(socket.inet_aton(ip))
 
 
 def from_hex_ip(ip):
+    """
+    Converts an IP address, which is in 32-bit packed format to the popular human readable dotted-quad string format.
+    :param ip: hexadecimal IP address
+    :return: IP address in string format
+    """
     return socket.inet_ntoa(unhexlify(ip))
 
 
@@ -144,9 +165,19 @@ def from_bytes_mac(mac):
 
 
 def parse_packet(data):
+    """
+    Parce received DHCP packet to packet class format
+    :param data: Data received (application layer)
+    :return: DHCPPayload object
+    """
     data = hexlify(data)
     if data[:6] != b'010106':
         log("Received a bad DHCP packet")
+        '''
+        op code 01 (bootrequest) since its either discover or request packet
+        htype 01: ethernet
+        hlen 06: (hardware length (MAC address) 6 bytes long
+        '''
         return None
     packet = DHCPPayload()
     packet.op = data[0:2]
@@ -238,6 +269,9 @@ def network_prefix():
 
 
 def assign_ip():
+    """
+    Assign free IP address to reply_packet.yiaddr
+    """
     global next_ip
     prefix = network_prefix()
     if received_packet.ciaddr == next_ip == '0.0.0.0':
@@ -255,11 +289,18 @@ def assign_ip():
 
 
 def option_len_hex(option_data):
-    # returns the len value for the option
+    """
+    :param option_data: DHCP option data
+    :return: len value for the option
+    """
     return format(int(len(option_data) / 2), '0{}x'.format(2)).encode()
 
 
 def hex_dns(dns_servers):
+    """
+    :param dns_servers: list of servers IP addresses in string format
+    :return: dns servers addresses in hex format
+    """
     total_data = b''
     for srv in dns_servers:
         total_data += to_hex_ip(srv)
@@ -267,6 +308,10 @@ def hex_dns(dns_servers):
 
 
 def add_options(payload):
+    """
+    :param payload: DHCP data converted to bytes
+    :return: DHCP packet with necessary options attached
+    """
     payload += OPTION_SUBNET_MASK + option_len_hex(to_hex_ip(my_netmask)) + to_hex_ip(my_netmask)
     payload += OPTION_ROUTER + option_len_hex(to_hex_ip(my_router)) + to_hex_ip(my_router)
     payload += OPTION_TTL + option_len_hex(DEFAULT_TTL) + DEFAULT_TTL
@@ -280,6 +325,11 @@ def add_options(payload):
 
 
 def add_udp(payload):
+    """
+    Adds UDP layer to DHCP packet
+    :param payload: DHCP packet
+    :return: DHCP packet with UDP header
+    """
     udp_header = format(HOST[1], '04x').encode()                     # Source port
     udp_header += format(68, '04x').encode()                         # Destination port
     udp_header += format(int(len(payload) / 2) + 8, '04x').encode()  # Total length of UDP segment
@@ -288,6 +338,12 @@ def add_udp(payload):
 
 
 def add_ip(payload, destination_ip):
+    """
+    Add IP layer to DHCP packet
+    :param payload: DHCP packet with UDP header
+    :param destination_ip: destination IP in string format
+    :return: DHCP packet with UDP and IP headers
+    """
     ip_header = b'4500'                                     # IP version (4), Header length (5 nibbles), DSCP(0), ECN(0)
     ip_header += format(int(len(payload) / 2) + 20, '04x').encode()  # Total IP packet length
     ip_header += b'00004000'                                # ID (disabled), Flags (don't fragment)
@@ -300,13 +356,19 @@ def add_ip(payload, destination_ip):
 
 
 def add_ethernet(payload, destination_mac):
+    """
+    Add "data link" (Ethernet) layer to packet
+    :param payload: DHCP packet with UDP and IP headers
+    :param destination_mac: Destination MAC address in bytes format
+    :return: Ethernet frame with IP and UDP headers and DHCP packet
+    """
     eth_header = destination_mac
     eth_header += my_mac.replace(':', '').encode()
     eth_header += b'0800'  # IPv4
     return eth_header + payload
 
 
-with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rx_socket:
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rx_socket:  # rx_socket - Receiving socket, IPv4 UDP
     try:
         rx_socket.bind(HOST)
     except PermissionError as e:
@@ -322,14 +384,15 @@ with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rx_socket:
     my_netmask = get_my_netmask(my_ip)
     my_mac = gma()
     my_interface = get_my_interface()
-    my_router = '.'.join([*network_prefix()[:-1], '1'])
+    my_router = '.'.join([*network_prefix()[:-1], '1'])  # My network prefix with computer address 1
     if arp(my_router) == b'':
         my_router = ''
 
     next_ip = '0.0.0.0'
-    hex_lease = format(DEFAULT_LEASE_TIME, '0{}x'.format(LEASE_TIME_LEN)).encode()
-    hex_renewal = format(DEFAULT_RENEWAL_TIME, '0{}x'.format(LEASE_TIME_LEN)).encode()
-    hex_rebind = format(DEFAULT_REBINDING_TIME, '0{}x'.format(LEASE_TIME_LEN)).encode()
+    hex_lease = format(DEFAULT_LEASE_TIME, '0{}x'.format(LEASE_TIME_LEN)).encode()       # Lease time in hex format
+    hex_renewal = format(DEFAULT_RENEWAL_TIME, '0{}x'.format(LEASE_TIME_LEN)).encode()   # Lease renewal time
+                                                                                         # in hex format
+    hex_rebind = format(DEFAULT_REBINDING_TIME, '0{}x'.format(LEASE_TIME_LEN)).encode()  # Rebinding time in hex format
 
     while True:
         log("Listening on {}:{}".format(*HOST))
@@ -342,7 +405,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rx_socket:
             received_packet = parse_packet(data)
             if not received_packet:
                 continue
-            if received_packet.abort:
+            if received_packet.abort:  # True if packet is directed to other DHCP server
                 continue
             log("Packet Received")
 
@@ -361,6 +424,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rx_socket:
             reply_packet.siaddr = to_hex_ip(my_ip)
             reply_packet.giaddr = to_hex_ip('0.0.0.0')
             reply_packet.chaddr = received_packet.chaddr
+
             if received_packet.message_type == DHCP_DISCOVER:
                 reply_packet.message_type = DHCP_OFFER
                 payload = reply_packet.to_bytes()
@@ -378,15 +442,21 @@ with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rx_socket:
                     dhcp_payload = add_options(payload)
 
             # Encapsulation
+
             udp_segment = add_udp(dhcp_payload)
-            if received_packet.b_flag == b'0000':
+            if received_packet.b_flag == b'0000':  # If broadcast flag is 0000 (false) we have client address
                 destination = [received_packet.ciaddr.decode(), received_packet.chaddr]
             else:
-                destination = ['255.255.255.255', b'f' * 12]
+                destination = ['255.255.255.255', b'f' * 12]  # If broadcast flag was true we send a broadcast message
             ip_packet = add_ip(udp_segment, (destination[0]))
             ethernet_frame = add_ethernet(ip_packet, destination[1])
 
             with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3)) as tx_socket:
+                '''
+                tx_socket = Transmit socket
+                Since I encountered permission challenges transmitting UDP broadcast messages from the "rx_socket"
+                I bypassed those by using this raw socket
+                '''
                 tx_socket.bind((my_interface, 0))
                 log("Sending Reply...")
                 tx_socket.send(unhexlify(ethernet_frame))
